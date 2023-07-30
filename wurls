@@ -1,0 +1,375 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+	
+)
+
+type wurl struct {
+	date string
+	url  string
+}
+
+type fetchFn func(string, bool) ([]wurl, error)
+
+var (
+	dates       bool
+	noSubs      bool
+	domains     []string
+	apiKey      string
+	fetchFns    = []fetchFn{getWaybackURLs}
+	seenURLs    sync.Map
+	ignoredExts = []string{"pg", "JPG", "jpeg", "png", "doc", "PNG", "SVG", "svg", "pdf", "PDF", "ttf", "eot", "cssx", "css", "gif", "GIF", "ico", "woff", "woff2"}
+)
+
+func init() {
+	flag.BoolVar(&dates, "dates", false, "show date of fetch in the first column")
+	flag.BoolVar(&noSubs, "no-subs", false, "don't include subdomains of the target domain")
+	flag.Parse()
+
+	if flag.NArg() > 0 {
+		// fetch for a single domain
+		domains = []string{flag.Arg(0)}
+	} else {
+		// fetch for all domains from stdin
+		sc := bufio.NewScanner(os.Stdin)
+		for sc.Scan() {
+			domains = append(domains, sc.Text())
+		}
+
+		if err := sc.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read input: %s\n", err)
+			os.Exit(1)
+		}
+	}
+
+	apiKey = os.Getenv("VT_API_KEY")
+}
+
+func main() {
+	var allURLs []string
+
+	for _, domain := range domains {
+		wg := sync.WaitGroup{}
+		wurls := make(chan wurl)
+
+		for _, fetch := range fetchFns {
+			wg.Add(1)
+			go func(fn fetchFn) {
+				defer wg.Done()
+				resp, err := fn(domain, noSubs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to fetch URLs for %s: %s\n", domain, err)
+					return
+				}
+				for _, r := range resp {
+					if noSubs && isSubdomain(r.url, domain) {
+						continue
+					}
+					if shouldIgnoreURL(r.url) {
+						continue
+					}
+					wurls <- r
+				}
+			}(fetch)
+		}
+
+		go func() {
+			wg.Wait()
+			close(wurls)
+		}()
+
+		for w := range wurls {
+			if _, ok := seenURLs.Load(w.url); ok {
+				continue
+			}
+
+			seenURLs.Store(w.url, true)
+
+			if dates {
+				d, err := time.Parse("20060102150405", w.date)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to parse date [%s] for URL [%s]\n", w.date, w.url)
+					continue
+				}
+				fmt.Printf("%s %s\n", d.Format(time.RFC3339), w.url)
+			} else {
+				fmt.Println(w.url)
+			}
+
+			allURLs = append(allURLs, w.url)
+		}
+	}
+	
+	
+	extensions := []string{"7z", "achee", "action", "adr", "apk", "arj", "ascx", "asmx", "asp", "aspx", "axd", "backup", "bak", "bat", "bin", "bkf", "bkp", "bok", "cab", "cer", "cfg", "cfm", "cfml", "cgi", "cnf", "conf", "config", "cpl", "crt", "csr", "csv", "dat", "db", "dbf", "deb", "dmg", "dmp", "doc", "docx", "drv", "email", "eml", "emlx", "env", "exe", "gadget", "gz", "html", "ica", "inf", "ini", "iso", "jar", "java", "jhtml", "json", "jsp", "key", "log", "lst", "mai", "mbox", "mbx", "md", "mdb", "msg", "msi", "nsf", "ods", "oft", "old", "ora", "ost", "pac", "passwd", "pcf", "pdf", "pem", "pgp", "php", "php3", "php4", "php5", "phtm", "phtml", "pkg", "pl", "plist", "pst", "pwd", "py", "rar", "rb", "rdp", "reg", "rpm", "rtf", "sav", "sh", "shtm", "shtml", "skr", "sql", "swf", "sys", "tar", "tar.gz", "tmp", "toast", "tpl", "txt", "url", "vcd", "vcf", "wml", "wpd", "wsdl", "wsf", "xls", "xlsm", "xlsx", "xml", "xsd", "yaml", "yml", "z", "zip"}
+
+	
+	
+	
+	
+	
+
+	
+	
+        err := saveCleanURLsToFile(allURLs, "url_parser_all.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to save clean URLs to file: %s\n", err)
+	}
+
+	filteredURLs, queryURLs := filterURLsByQueryParams(allURLs)
+
+	err = saveURLInfoToFile(filteredURLs, "urls_parser.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to save URL info to file: %s\n", err)
+	}
+
+	err = saveURLInfoToFile(queryURLs, "urls_parser_key.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to save URL info to file: %s\n", err)
+	}
+	
+	err = filterURLsByExtensions("url_parser_all.txt", extensions)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	
+
+	// ...
+
+}
+
+
+func saveCleanURLsToFile(urls []string, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, u := range urls {
+		if shouldIgnoreURL(u) {
+			continue
+		}
+		fmt.Fprintln(file, u)
+	}
+
+	return nil
+}
+
+
+
+func saveURLInfoToFile(urls []string, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, u := range urls {
+		queryKeys, queryValues := extractQueryParams(u)
+
+		fmt.Fprintf(file, "URL: %s\n", u)
+		fmt.Fprintf(file, "Query Keys: %s\n", strings.Join(queryKeys, ", "))
+		fmt.Fprintf(file, "Query Values: %s\n", strings.Join(queryValues, ", "))
+		fmt.Fprintln(file, "==================================================")
+	}
+
+	return nil
+}
+
+func extractQueryParams(u string) ([]string, []string) {
+	parsedURL, err := url.Parse(u)
+	if err != nil {
+		return nil, nil
+	}
+
+	query := parsedURL.Query()
+	keys := make([]string, 0, len(query))
+	values := make([]string, 0, len(query))
+
+	for key, val := range query {
+		keys = append(keys, key)
+		values = append(values, val[0])
+	}
+
+	return keys, values
+}
+
+func filterURLs(urls []string) []string {
+	filteredURLs := make([]string, 0)
+
+	for _, u := range urls {
+		ignoreURL := false
+		for _, ext := range ignoredExts {
+			if strings.HasSuffix(u, "."+ext) {
+				ignoreURL = true
+				break
+			}
+		}
+
+		if !ignoreURL {
+			filteredURLs = append(filteredURLs, u)
+		}
+	}
+
+	return filteredURLs
+}
+
+func filterURLsByQueryParams(urls []string) ([]string, []string) {
+	filteredURLs := make([]string, 0)
+	queryURLs := make([]string, 0)
+
+	for _, u := range urls {
+		queryKeys, _ := extractQueryParams(u)
+		if len(queryKeys) > 0 {
+			queryURLs = append(queryURLs, u)
+		} else {
+			filteredURLs = append(filteredURLs, u)
+		}
+	}
+
+	return filteredURLs, queryURLs
+}
+
+
+
+
+func filterURLsByExtensions(filename string, extensions []string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		url := scanner.Text()
+		if shouldFilterURL(url, extensions) {
+			ext := getFileExtension(url)
+			err := saveURLToFile(url, ext+".txt")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func shouldFilterURL(url string, extensions []string) bool {
+	for _, ext := range extensions {
+		if strings.HasSuffix(url, "."+ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func getFileExtension(url string) string {
+	parts := strings.Split(url, ".")
+	if len(parts) > 1 {
+		return parts[len(parts)-1]
+	}
+	return ""
+}
+
+func saveURLToFile(url, filename string) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = fmt.Fprintln(file, url)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+
+
+
+
+func getWaybackURLs(domain string, noSubs bool) ([]wurl, error) {
+	subsWildcard := "*."
+	if noSubs {
+		subsWildcard = ""
+	}
+
+	res, err := http.Get(fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s%s/*&output=json&collapse=urlkey", subsWildcard, domain))
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	raw, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper [][]string
+	err = json.Unmarshal(raw, &wrapper)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]wurl, 0, len(wrapper))
+	skip := true
+
+	for _, urls := range wrapper {
+		// The first item is always just the string "original",
+		// so we should skip the first item
+		if skip {
+			skip = false
+			continue
+		}
+		out = append(out, wurl{date: urls[1], url: urls[2]})
+	}
+
+	return out, nil
+}
+
+func isSubdomain(u, domain string) bool {
+	uParts := strings.Split(u, ".")
+	dParts := strings.Split(domain, ".")
+
+	if len(uParts) < len(dParts) {
+		return false
+	}
+
+	for i := len(uParts) - 1; i >= 0; i-- {
+		if uParts[i] != dParts[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func shouldIgnoreURL(u string) bool {
+	for _, ext := range ignoredExts {
+		if strings.HasSuffix(u, "."+ext) {
+			return true
+		}
+	}
+	return false
+}
+
